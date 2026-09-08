@@ -225,6 +225,7 @@ ConVar g_hDevBan;
 ConVar g_hGainLogSpjBan;
 ConVar g_hIdentificalStrafeBan;
 ConVar g_hDevIgnoreStyles;
+ConVar g_hReportIgnoreStyles;
 ConVar g_hBashCmdPublic;
 Cookie g_hEnabledCookie;
 Cookie g_hPersonalCookie;
@@ -330,6 +331,7 @@ public void OnPluginStart()
 	g_hDevBan = CreateConVar("bash_ban_dev", "0.4", "Offset threshold at which to ban a player", _, true, 0.0, true, 0.8);
 	g_hIdentificalStrafeBan = CreateConVar("bash_ban_identical", "20", "Threshold to ban player for identical sync offsets", _, true, 15.0, true, 50.0);
 	g_hDevIgnoreStyles = CreateConVar("bash_dev_ignore_styles", "", "Shavit style ids exempt from the deviation and identical-strafe detections, comma separated. Suppresses the alert, the log and the autoban. Gain logs are unaffected. Empty checks every style.");
+	g_hReportIgnoreStyles = CreateConVar("bash_report_ignore_styles", "", "Shavit style ids whose detections are not passed to the Bash_OnDetection forward, comma separated. Chat, logs, webhook and bans are unaffected. Empty reports every style.");
 	g_hGainLogSpjBan = CreateConVar("bash_ban_spj", "4.7", "Gain log spj threshhold for autobans", _, true, 3.5, false);
 
 	g_hDevBanSafeGroup = CreateConVar("bash_ban_dev_safegroup", "0.35", "Offset threshold at which to ban a player who is in a safe group", _, true, 0.0, true, 0.8);
@@ -609,10 +611,21 @@ stock void AnticheatLog(int client, bool alert, const char[] log, any ...)
 	char buffer[1024];
 	VFormat(buffer, sizeof(buffer), log, 4);
 
-	Call_StartForward(g_fwdOnDetection);
-	Call_PushCell(client);
-	Call_PushString(buffer);
-	Call_Finish();
+	// Only the forward is skipped, the log and webhook below still run.
+	bool bReport = true;
+
+	if(client >= 1 && client <= MaxClients && IsClientInGame(client))
+	{
+		bReport = !IsStyleInList(g_hReportIgnoreStyles, Shavit_GetBhopStyle(client));
+	}
+
+	if(bReport)
+	{
+		Call_StartForward(g_fwdOnDetection);
+		Call_PushCell(client);
+		Call_PushString(buffer);
+		Call_Finish();
+	}
 
 	LogToFile(g_aclogfile, "%L<%s> %s", client, g_sPlayerIp[client], buffer);
 
