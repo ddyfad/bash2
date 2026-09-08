@@ -3636,6 +3636,10 @@ void UpdateGains(int client, float vel[3], float angles[3], int buttons)
 			GetEntProp(client, Prop_Data, "m_nWaterLevel") < 2 &&
 			!(GetEntityFlags(client) & FL_ATCONTROLS))
 		{
+			// No wish input, do not count the tick.
+			if(FloatAbs(vel[0]) < 1.0 && FloatAbs(vel[1]) < 1.0)
+				return;
+
 			bool isYawing = false;
 			if(buttons & IN_LEFT) isYawing = !isYawing;
 			if(buttons & IN_RIGHT) isYawing = !isYawing;
