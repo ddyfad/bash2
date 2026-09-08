@@ -13,7 +13,7 @@ Main Changes:
 * Logs are more presentable/searchable
 
 Changes in this fork:
-* **Deviation HUD** - puts the rolling average and deviation of your last 50 start and end strafe offsets on screen, so you can see the numbers the detections act on while you play instead of only afterwards in the logs. `sm_devhud` opens the menu. Two modes: a side HUD appended to shavit-hud's key hint, or a standalone overlay you can drag into place
+* **Deviation HUD** - puts the rolling average and deviation of your last 50 start and end strafe offsets on screen, so you can see the numbers the detections act on while you play instead of only afterwards in the logs. The menu is found in `sm_bash` under "live deviation HUD"
 * Start and end offsets are also tracked across a whole run and printed on finish, since the 50-sample window the detections use is too short to judge a run by
 * Reset strafe tracking on style change, so an autostrafe style's identical offsets are no longer counted against the style you switch to
 * Don't count gain on ticks with no wish input, and fix a stationary check that only matched exactly 0.0 and so scored standing still as a perfect strafe
