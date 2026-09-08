@@ -3679,8 +3679,12 @@ void UpdateGains(int client, float vel[3], float angles[3], int buttons)
 				wishvel[i] = fore[i] * vel[0] + side[i] * vel[1];
 
 			wishspeed = NormalizeVector(wishvel, wishdir);
-			if(wishspeed > GetEntPropFloat(client, Prop_Send, "m_flMaxspeed")) wishspeed = GetEntPropFloat(client, Prop_Send, "m_flMaxspeed");
+			if(wishspeed == 0.0)
+				return;
 
+			float maxSpeed = GetEntPropFloat(client, Prop_Send, "m_flMaxspeed");
+			if(wishspeed > maxSpeed) wishspeed = maxSpeed;
+			
 			if(wishspeed)
 			{
 				wishspd = (wishspeed > 30.0) ? 30.0 : wishspeed;
