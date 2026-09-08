@@ -104,6 +104,7 @@ float g_fLastAngleDifference[MAXPLAYERS + 1][2];
 bool g_bAwaitingBan[MAXPLAYERS + 1] = {false, ...};
 
 bool g_bInSafeGroup[MAXPLAYERS + 1] = {false, ...};
+bool g_bAdminImmune[MAXPLAYERS + 1] = {false, ...};
 
 
 
@@ -226,6 +227,59 @@ ConVar g_hIdentificalStrafeBan;
 ConVar g_hBashCmdPublic;
 Cookie g_hEnabledCookie;
 Cookie g_hPersonalCookie;
+
+// ---- live deviation HUD -------------------------------------------------
+// BASH already computes strafe average and standard deviation, but only when
+// the 50 frame ring wraps, and only to decide whether to flag someone. This
+// recomputes the same two numbers from the same buffers after every strafe and
+// draws them on screen, so a player can watch their own consistency the way
+// they watch sync. Purely additive: nothing below feeds back into detection.
+// Three states rather than a toggle: the side HUD is the nicer home for this,
+// but it only exists when shavit-hud is running, so the standalone overlay
+// stays available as a fallback.
+#define DEVHUD_OFF     0
+#define DEVHUD_SIDE    1
+#define DEVHUD_OVERLAY 2
+
+Cookie g_hDevHudCookie;
+Cookie g_hPrintRunDevCookie;
+int    g_iDevHud[MAXPLAYERS + 1];
+bool   g_bPrintRunDev[MAXPLAYERS + 1];
+Handle g_hDevHudSync;
+
+float  g_fDevHud_StartAvg[MAXPLAYERS + 1];
+float  g_fDevHud_StartDev[MAXPLAYERS + 1];
+int    g_iDevHud_StartSamples[MAXPLAYERS + 1];
+float  g_fDevHud_EndAvg[MAXPLAYERS + 1];
+float  g_fDevHud_EndDev[MAXPLAYERS + 1];
+int    g_iDevHud_EndSamples[MAXPLAYERS + 1];
+
+// Per-run offset statistics. These are intentionally independent of the
+// 50-entry detection/HUD ring buffers, so they contain every offset recorded
+// during the current run.
+int   g_iRunStartSamples[MAXPLAYERS + 1];
+float g_fRunStartMean[MAXPLAYERS + 1];
+float g_fRunStartM2[MAXPLAYERS + 1];
+
+int   g_iRunEndSamples[MAXPLAYERS + 1];
+float g_fRunEndMean[MAXPLAYERS + 1];
+float g_fRunEndM2[MAXPLAYERS + 1];
+
+// Per-client position, nudged in game and stored in cookies. The ConVars stay
+// as the starting point for a player who has never moved it.
+ConVar g_hDevHudX;
+ConVar g_hDevHudY;
+Cookie g_hDevHudXCookie;
+Cookie g_hDevHudYCookie;
+float  g_fDevHudX[MAXPLAYERS + 1];
+float  g_fDevHudY[MAXPLAYERS + 1];
+bool   g_bDevHudEditing[MAXPLAYERS + 1];
+int    g_iDevHudEditCmd[MAXPLAYERS + 1];
+
+// Held well past the refresh interval so the text never blanks between draws,
+// which is what makes it read as a live value rather than a flashing message.
+#define DEVHUD_REFRESH 0.15
+#define DEVHUD_HOLD    0.60
 ConVar g_hBanIP;
 ConVar g_hSafeGroup;
 ConVar g_hIdentificalStrafeBanSafeGroup;
@@ -290,6 +344,10 @@ public void OnPluginStart()
 
 	HookConVarChange(g_hBanLength, OnBanLengthChanged);
 
+	g_hDevHudCookie = RegClientCookie("bash2_devhud", "live strafe deviation HUD", CookieAccess_Private);
+	g_hPrintRunDevCookie = RegClientCookie("bash2_print_run_devs", "print whole-run start and end deviations after a run", CookieAccess_Private);
+	g_hDevHudXCookie = RegClientCookie("bash2_devhud_x", "live deviation HUD x position", CookieAccess_Private);
+	g_hDevHudYCookie = RegClientCookie("bash2_devhud_y", "live deviation HUD y position", CookieAccess_Private);
 	g_hEnabledCookie = RegClientCookie("bash2_logs_enabled", "if logs are on", CookieAccess_Private);
 	g_hPersonalCookie = RegClientCookie("bash2_logs_personal", "if only your own logs are printed", CookieAccess_Private);
 
@@ -302,6 +360,8 @@ public void OnPluginStart()
 	RegAdminCmd("sm_bash2_test", Bash_Test, ADMFLAG_RCON, "trigger a test message so you can know if webhooks are working :)");
 	RegAdminCmd("sm_bash2_testban", Bash_TestBan, ADMFLAG_RCON, "ban a client using bash autoban function");
 
+	RegConsoleCmd("sm_bashhud", Bash_DevHud, "Toggle the live strafe deviation HUD");
+	RegConsoleCmd("sm_devhud", Bash_DevHud, "Toggle the live strafe deviation HUD");
 	RegConsoleCmd("sm_bash", Bash_Settings, "Open the bash settings menu");
 	RegConsoleCmd("sm_bash2", Bash_Settings, "Open the bash settings menu");
 	RegConsoleCmd("bash2_stats", Bash_Stats, "Check a player's strafe stats");
@@ -428,6 +488,12 @@ public MRESReturn Hook_DHooks_Teleport(int client, Handle hParams)
 void AutoBanPlayer(int client, bool disconnected = false)
 {
 	g_bAwaitingBan[client] = false;
+
+	if(g_bAdminImmune[client])
+	{
+		AnticheatLog(client, false, "is a SourceMod admin, aborting auto-ban.");
+		return;
+	}
 
 	if(!g_hAutoban.BoolValue)
 	{
@@ -644,6 +710,15 @@ public void OnMapStart()
 
 	CreateTimer(0.25, Timer_QueryCvars, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 
+	// Its own synchroniser so it cannot fight shavit-hud or jumpstats for one
+	// of the six game_text channels.
+	g_hDevHudSync = CreateHudSynchronizer();
+
+	g_hDevHudX = CreateConVar("bash2_devhud_x", "0.02", "Live deviation HUD horizontal position, 0 to 1. -1 centres it.", 0, true, -1.0, true, 1.0);
+	g_hDevHudY = CreateConVar("bash2_devhud_y", "0.42", "Live deviation HUD vertical position, 0 to 1. -1 centres it.", 0, true, -1.0, true, 1.0);
+
+	CreateTimer(DEVHUD_REFRESH, Timer_DevHud, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+
 	if(g_bLateLoad)
 	{
 		for(int iclient = 1; iclient <= MaxClients; iclient++)
@@ -689,6 +764,21 @@ public void OnClientCookiesCached(int client)
 	{
 		Bash_PersonalMode(client, 0);
 	}
+
+	g_iDevHud[client] = CheckCookie(client, g_hDevHudCookie);
+	g_bPrintRunDev[client] = (CheckCookie(client, g_hPrintRunDevCookie) != 0);
+
+	if(g_iDevHud[client] < DEVHUD_OFF || g_iDevHud[client] > DEVHUD_OVERLAY)
+	{
+		g_iDevHud[client] = DEVHUD_OFF;
+	}
+
+	g_bDevHudEditing[client] = false;
+	g_iDevHudEditCmd[client] = 0;
+	g_fDevHudX[client] = ReadDevHudCookie(client, g_hDevHudXCookie, g_hDevHudX.FloatValue, -1.0, 1.0);
+	g_fDevHudY[client] = ReadDevHudCookie(client, g_hDevHudYCookie, g_hDevHudY.FloatValue, -1.0, 1.0);
+
+	ResetDevHud(client);
 }
 
 public Action Timer_QueryCvars(Handle timer, any data)
@@ -772,6 +862,8 @@ public void OnClientConnected(int client)
 
 public void OnClientPostAdminCheck(int client)
 {
+	g_bAdminImmune[client] = GetUserAdmin(client) != INVALID_ADMIN_ID;
+
 	if (CheckCommandAccess(client, "bash2_chat_log", ADMFLAG_RCON))
 	{
 		g_bAdminMode[client] = true;
@@ -841,7 +933,10 @@ public void OnClientPutInServer(int client)
 
 	g_bAwaitingBan[client] = false;
 
+	ResetDevHud(client);
+
 	g_bInSafeGroup[client] = false;
+	g_bAdminImmune[client] = false;
 
 	char groupID[16];
 	g_hSafeGroup.GetString(groupID, sizeof(groupID));
@@ -855,6 +950,8 @@ public void OnClientAuthorized(int client, const char[] auth)
 }
 public void OnClientDisconnect(int client)
 {
+	g_bDevHudEditing[client] = false;
+
 	if (GetSteamAccountID(client) != 0 && g_hPersistentData.BoolValue)
 	{
 		fuck_sourcemod x;
@@ -1330,6 +1427,9 @@ void ShowBashSettings(int client)
 	{
 		menu.AddItem("personalmode",		(g_bPersonalMode[client]) ? "[You] Show logs":"[All] Show logs");
 	}
+	char sDevHud[64];
+	FormatEx(sDevHud, sizeof(sDevHud), "Live deviation HUD: %s", DevHudModeName(g_iDevHud[client]));
+	menu.AddItem("devhud", sDevHud);
 	menu.AddItem("stats",			"Stats");
 
 	menu.Display(client, MENU_TIME_FOREVER);
@@ -1352,6 +1452,10 @@ public int BashSettings_Menu(Menu menu, MenuAction action, int param1, int param
 			Bash_PersonalMode(param1, GetClientUserId(param1));
 			ShowBashSettings(param1);
 		}
+		else if(StrEqual(sInfo, "devhud"))
+		{
+			ShowDevHudMenu(param1);
+		}
 		else if(StrEqual(sInfo, "stats"))
 		{
 			ShowBashStats(param1, GetClientUserId(param1));
@@ -1363,6 +1467,623 @@ public int BashSettings_Menu(Menu menu, MenuAction action, int param1, int param
 		delete menu;
 	}
 	return 0;
+}
+
+// ======================================================================
+// Live deviation HUD
+//
+// Reads the same StrafeData_Difference buffers the detector reads, and the
+// same GetAverage / StandardDeviation helpers, so the numbers on screen are
+// the numbers BASH judges on. Nothing here writes to those buffers.
+// ======================================================================
+
+// ---------------------------------------------------------------- HUD submenu
+
+void ShowDevHudMenu(int client)
+{
+	Menu menu = new Menu(DevHudMenu_Handler);
+	menu.SetTitle("[BASH] Live deviation HUD\nShows your start and end strafe average and deviation,\nrecalculated every strafe.\n ");
+
+	char item[64];
+	FormatEx(item, sizeof(item), "Display: %s", DevHudModeName(g_iDevHud[client]));
+	menu.AddItem("mode", item);
+
+	// Position only means anything for the standalone overlay; in side HUD mode
+	// shavit-hud owns the placement.
+	FormatEx(item, sizeof(item), "Position: %.2f, %.2f", g_fDevHudX[client], g_fDevHudY[client]);
+	menu.AddItem("position", item,
+		(g_iDevHud[client] == DEVHUD_OVERLAY) ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
+
+	menu.AddItem("reset", "Reset position",
+		(g_iDevHud[client] == DEVHUD_OVERLAY) ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
+
+	FormatEx(item, sizeof(item), "%s Print devs after run", g_bPrintRunDev[client] ? "[x]" : "[ ]");
+	menu.AddItem("printdevs", item);
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int DevHudMenu_Handler(Menu menu, MenuAction action, int param1, int param2)
+{
+	if(action == MenuAction_Select)
+	{
+		char sInfo[32];
+		menu.GetItem(param2, sInfo, sizeof(sInfo));
+
+		if(StrEqual(sInfo, "mode"))
+		{
+			Bash_DevHud(param1, 0);
+			ShowDevHudMenu(param1);
+		}
+		else if(StrEqual(sInfo, "position"))
+		{
+			StartDevHudEditor(param1);
+		}
+		else if(StrEqual(sInfo, "reset"))
+		{
+			g_fDevHudX[param1] = g_hDevHudX.FloatValue;
+			g_fDevHudY[param1] = g_hDevHudY.FloatValue;
+			SaveDevHudPosition(param1);
+			ShowDevHudMenu(param1);
+		}
+		else if(StrEqual(sInfo, "printdevs"))
+		{
+			g_bPrintRunDev[param1] = !g_bPrintRunDev[param1];
+			char sCookie[4];
+			IntToString(g_bPrintRunDev[param1] ? 1 : 0, sCookie, sizeof(sCookie));
+			SetClientCookie(param1, g_hPrintRunDevCookie, sCookie);
+			ShowDevHudMenu(param1);
+		}
+	}
+	else if(action == MenuAction_Cancel && param2 == MenuCancel_ExitBack)
+	{
+		ShowBashSettings(param1);
+	}
+	else if(action & MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+// ----------------------------------------------------------- position editor
+
+float ReadDevHudCookie(int client, Cookie cookie, float fallback, float lo, float hi)
+{
+	char sCookie[16];
+	GetClientCookie(client, cookie, sCookie, sizeof(sCookie));
+
+	if(sCookie[0] == '\0')
+	{
+		return fallback;
+	}
+
+	float value = StringToFloat(sCookie);
+
+	if(value < lo) value = lo;
+	if(value > hi) value = hi;
+
+	return value;
+}
+
+void SaveDevHudPosition(int client)
+{
+	char sCookie[16];
+
+	FloatToString(g_fDevHudX[client], sCookie, sizeof(sCookie));
+	SetClientCookie(client, g_hDevHudXCookie, sCookie);
+
+	FloatToString(g_fDevHudY[client], sCookie, sizeof(sCookie));
+	SetClientCookie(client, g_hDevHudYCookie, sCookie);
+}
+
+void StartDevHudEditor(int client)
+{
+	if(!IsPlayerAlive(client))
+	{
+		Shavit_PrintToChat(client, "\x07FF0000You need to be alive to move the HUD.");
+		ShowDevHudMenu(client);
+
+		return;
+	}
+
+	g_bDevHudEditing[client] = true;
+	g_iDevHudEditCmd[client] = 0;
+	ShowDevHudEditorPanel(client);
+}
+
+void StopDevHudEditor(int client)
+{
+	if(!g_bDevHudEditing[client])
+	{
+		return;
+	}
+
+	g_bDevHudEditing[client] = false;
+
+	if(IsClientInGame(client) && IsPlayerAlive(client))
+	{
+		SetEntProp(client, Prop_Data, "m_fFlags", GetEntProp(client, Prop_Data, "m_fFlags") & ~FL_ATCONTROLS);
+	}
+
+	SaveDevHudPosition(client);
+}
+
+void ShowDevHudEditorPanel(int client)
+{
+	Panel panel = new Panel();
+	panel.SetTitle("[BASH] Deviation HUD position\n ");
+	panel.DrawItem("Centre horizontally");
+	panel.DrawItem("Reset to default");
+	panel.DrawItem("", ITEMDRAW_SPACER);
+	panel.DrawItem("WASD or the mouse moves it.\nWalk locks X, duck locks Y.", ITEMDRAW_RAWLINE);
+	panel.DrawItem("", ITEMDRAW_SPACER);
+	panel.DrawItem("Save and back");
+	panel.Send(client, DevHudEditorPanel_Handler, MENU_TIME_FOREVER);
+	delete panel;
+}
+
+public int DevHudEditorPanel_Handler(Menu menu, MenuAction action, int client, int selection)
+{
+	if(action == MenuAction_Select)
+	{
+		switch(selection)
+		{
+			case 1:
+			{
+				// -1 centres the whole message rather than its first character.
+				g_fDevHudX[client] = -1.0;
+			}
+			case 2:
+			{
+				g_fDevHudX[client] = g_hDevHudX.FloatValue;
+				g_fDevHudY[client] = g_hDevHudY.FloatValue;
+			}
+			// Centre=1, Reset=2, spacer=3, rawline takes no slot, spacer=4,
+			// so Save and back is 5.
+			case 5:
+			{
+				StopDevHudEditor(client);
+				ShowDevHudMenu(client);
+
+				return 0;
+			}
+		}
+
+		ShowDevHudEditorPanel(client);
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		StopDevHudEditor(client);
+		ShowDevHudMenu(client);
+	}
+
+	return 0;
+}
+
+void AdjustDevHudPosition(int client, int axis, int amount)
+{
+	float delta = float(amount) * 0.002;
+
+	if(axis == 0)
+	{
+		// Coming off centre starts from the middle rather than jumping to 0.
+		if(g_fDevHudX[client] < 0.0)
+		{
+			g_fDevHudX[client] = 0.5;
+		}
+
+		g_fDevHudX[client] += delta;
+
+		if(g_fDevHudX[client] < 0.0) g_fDevHudX[client] = 0.0;
+		if(g_fDevHudX[client] > 0.99) g_fDevHudX[client] = 0.99;
+	}
+	else
+	{
+		g_fDevHudY[client] += delta;
+
+		if(g_fDevHudY[client] < 0.0) g_fDevHudY[client] = 0.0;
+		if(g_fDevHudY[client] > 0.99) g_fDevHudY[client] = 0.99;
+	}
+}
+
+void UpdateDevHudEditor(int client, int buttons, int mouse[2])
+{
+	SetEntProp(client, Prop_Data, "m_fFlags", GetEntProp(client, Prop_Data, "m_fFlags") | FL_ATCONTROLS);
+
+	bool xLocked = (buttons & IN_SPEED) != 0;
+	bool yLocked = (buttons & IN_DUCK) != 0;
+
+	if(!xLocked)
+	{
+		if(buttons & IN_MOVERIGHT)     AdjustDevHudPosition(client, 0, 1);
+		else if(buttons & IN_MOVELEFT) AdjustDevHudPosition(client, 0, -1);
+
+		if(mouse[0] != 0) AdjustDevHudPosition(client, 0, mouse[0]);
+	}
+
+	if(!yLocked)
+	{
+		if(buttons & IN_FORWARD)    AdjustDevHudPosition(client, 1, -1);
+		else if(buttons & IN_BACK)  AdjustDevHudPosition(client, 1, 1);
+
+		if(mouse[1] != 0) AdjustDevHudPosition(client, 1, mouse[1]);
+	}
+
+	// A preview with placeholder numbers, so there is something to aim at even
+	// before any strafes have been recorded.
+	char sPos[32];
+
+	if(g_fDevHudX[client] < 0.0)
+	{
+		FormatEx(sPos, sizeof(sPos), "centred, %.2f", g_fDevHudY[client]);
+	}
+	else
+	{
+		FormatEx(sPos, sizeof(sPos), "%.2f, %.2f", g_fDevHudX[client], g_fDevHudY[client]);
+	}
+
+	SetHudTextParams(g_fDevHudX[client], g_fDevHudY[client], 0.35, 255, 255, 255, 255, 0, 0.0, 0.0, 0.0);
+	ShowSyncHudText(client, g_hDevHudSync, "start  avg %.2f  dev %.2f\nend    avg %.2f  dev %.2f\n[ %s ]",
+		g_fDevHud_StartAvg[client], g_fDevHud_StartDev[client],
+		g_fDevHud_EndAvg[client], g_fDevHud_EndDev[client], sPos);
+
+	g_iDevHudEditCmd[client]++;
+}
+
+char[] DevHudModeName(int mode)
+{
+	char out[16];
+
+	switch(mode)
+	{
+		case DEVHUD_SIDE:    strcopy(out, sizeof(out), "Side HUD");
+		case DEVHUD_OVERLAY: strcopy(out, sizeof(out), "Overlay");
+		default:             strcopy(out, sizeof(out), "Off");
+	}
+
+	return out;
+}
+
+void ResetDevHud(int client)
+{
+	// Reset the whole-run statistics as well. These are separate from the
+	// 50-sample HUD buffers and are populated on every recorded strafe.
+	g_iRunStartSamples[client] = 0;
+	g_fRunStartMean[client] = 0.0;
+	g_fRunStartM2[client] = 0.0;
+	g_iRunEndSamples[client] = 0;
+	g_fRunEndMean[client] = 0.0;
+	g_fRunEndM2[client] = 0.0;
+
+	g_fDevHud_StartAvg[client] = 0.0;
+	g_fDevHud_StartDev[client] = 0.0;
+	g_iDevHud_StartSamples[client] = 0;
+	g_fDevHud_EndAvg[client] = 0.0;
+	g_fDevHud_EndDev[client] = 0.0;
+	g_iDevHud_EndSamples[client] = 0;
+}
+
+void ResetRunOffsetStats(int client)
+{
+	g_iRunStartSamples[client] = 0;
+	g_fRunStartMean[client] = 0.0;
+	g_fRunStartM2[client] = 0.0;
+
+	g_iRunEndSamples[client] = 0;
+	g_fRunEndMean[client] = 0.0;
+	g_fRunEndM2[client] = 0.0;
+}
+
+void AddRunOffset(int client, bool start, int offset)
+{
+	int count;
+	float mean;
+	float m2;
+
+	if(start)
+	{
+		count = ++g_iRunStartSamples[client];
+		mean = g_fRunStartMean[client];
+		m2 = g_fRunStartM2[client];
+
+		float delta = float(offset) - mean;
+		mean += delta / float(count);
+		float delta2 = float(offset) - mean;
+		m2 += delta * delta2;
+
+		g_fRunStartMean[client] = mean;
+		g_fRunStartM2[client] = m2;
+	}
+	else
+	{
+		count = ++g_iRunEndSamples[client];
+		mean = g_fRunEndMean[client];
+		m2 = g_fRunEndM2[client];
+
+		float delta = float(offset) - mean;
+		mean += delta / float(count);
+		float delta2 = float(offset) - mean;
+		m2 += delta * delta2;
+
+		g_fRunEndMean[client] = mean;
+		g_fRunEndM2[client] = m2;
+	}
+}
+
+float GetRunOffsetSD(int client, bool start)
+{
+	int count = start ? g_iRunStartSamples[client] : g_iRunEndSamples[client];
+
+	if(count < 2)
+	{
+		return 0.0;
+	}
+
+	float m2 = start ? g_fRunStartM2[client] : g_fRunEndM2[client];
+
+	// Match BASH's existing StandardDeviation(), which uses population SD
+	// (divide by N rather than N-1).
+	return SquareRoot(m2 / float(count));
+}
+
+void PrintRunOffsetStats(int client)
+{
+	if(client < 1 || client > MaxClients || !IsClientInGame(client))
+	{
+		return;
+	}
+
+	int startSamples = g_iRunStartSamples[client];
+	int endSamples = g_iRunEndSamples[client];
+
+	if(startSamples == 0 && endSamples == 0)
+	{
+		return;
+	}
+
+	if(startSamples > 0 && endSamples > 0)
+	{
+		Shavit_PrintToChat(client,
+			"Run offsets | Start: Avg %.2f SD %.2f | End: Avg %.2f SD %.2f",
+			g_fRunStartMean[client], GetRunOffsetSD(client, true),
+			g_fRunEndMean[client], GetRunOffsetSD(client, false));
+	}
+	else if(startSamples > 0)
+	{
+		Shavit_PrintToChat(client,
+			"Run offsets | Start: Avg %.2f SD %.2f | End: N/A",
+			g_fRunStartMean[client], GetRunOffsetSD(client, true));
+	}
+	else
+	{
+		Shavit_PrintToChat(client,
+			"Run offsets | Start: N/A | End: Avg %.2f SD %.2f",
+			g_fRunEndMean[client], GetRunOffsetSD(client, false));
+	}
+}
+
+public Action Shavit_OnStart(int client)
+{
+	// Shavit can call OnStart repeatedly while the player is standing in the
+	// start zone, so resetting here guarantees that the next run starts with
+	// an empty whole-run accumulator. No strafe offsets from the previous run
+	// can leak into the new run.
+	ResetRunOffsetStats(client);
+
+	return Plugin_Continue;
+}
+
+public void Shavit_OnRestart(int client)
+{
+	ResetRunOffsetStats(client);
+}
+
+public void Shavit_OnStop(int client)
+{
+	ResetRunOffsetStats(client);
+}
+
+public void Shavit_OnFinish(int client, int style, float time, int jumps, int strafes, float sync, int track, float oldtime, float perfs, float avgvel, float maxvel, int timestamp)
+{
+	if(g_bPrintRunDev[client])
+	{
+		PrintRunOffsetStats(client);
+	}
+
+	ResetRunOffsetStats(client);
+}
+
+public Action Bash_DevHud(int client, int args)
+{
+	if(client < 1 || !IsClientInGame(client))
+	{
+		return Plugin_Handled;
+	}
+
+	// Off -> Side HUD -> Overlay -> Off
+	g_iDevHud[client] = (g_iDevHud[client] + 1) % 3;
+
+	char sCookie[8];
+	IntToString(g_iDevHud[client], sCookie, sizeof(sCookie));
+	SetClientCookie(client, g_hDevHudCookie, sCookie);
+
+	// The overlay owns its own channel, so leaving that mode has to wipe it or
+	// the last frame stays on screen until it times out.
+	if(g_iDevHud[client] != DEVHUD_OVERLAY)
+	{
+		ClearSyncHud(client, g_hDevHudSync);
+	}
+
+	Shavit_PrintToChat(client, "Live deviation HUD: %s%s",
+		(g_iDevHud[client] == DEVHUD_OFF) ? "\x07FF0000" : "\x0700FF00",
+		DevHudModeName(g_iDevHud[client]));
+
+	if(g_iDevHud[client] == DEVHUD_SIDE && !DevHudSideAvailable())
+	{
+		Shavit_PrintToChat(client, "\x07FF0000shavit-hud is not loaded, so the side HUD has nowhere to draw. Use Overlay instead.");
+	}
+
+	return Plugin_Handled;
+}
+
+// Recomputed every strafe rather than every 50 like the detector, because a
+// figure that only moves once a buffer wraps does not read as live.
+void UpdateDevHud(int client, bool start)
+{
+	if(client < 1 || client > MaxClients || !IsClientInGame(client))
+	{
+		return;
+	}
+
+	int array[MAX_FRAMES];
+	int size;
+
+	for(int idx; idx < MAX_FRAMES; idx++)
+	{
+		if(start)
+		{
+			if(!g_bStartStrafe_IsRecorded[client][idx])
+			{
+				continue;
+			}
+
+			array[size++] = g_iStartStrafe_Stats[client][StrafeData_Difference][idx];
+		}
+		else
+		{
+			if(!g_bEndStrafe_IsRecorded[client][idx])
+			{
+				continue;
+			}
+
+			array[size++] = g_iEndStrafe_Stats[client][StrafeData_Difference][idx];
+		}
+	}
+
+	if(size < 2)
+	{
+		return;
+	}
+
+	float mean = GetAverage(array, size);
+	float sd   = StandardDeviation(array, size, mean);
+
+	if(start)
+	{
+		g_fDevHud_StartAvg[client] = mean;
+		g_fDevHud_StartDev[client] = sd;
+		g_iDevHud_StartSamples[client] = size;
+	}
+	else
+	{
+		g_fDevHud_EndAvg[client] = mean;
+		g_fDevHud_EndDev[client] = sd;
+		g_iDevHud_EndSamples[client] = size;
+	}
+}
+
+// shavit-hud is only present on some servers and only draws the key hint on
+// Source 2013. It calls RegPluginLibrary("shavit-hud"), so ask about that.
+// GetFeatureStatus does not work here: it only reports on natives this plugin
+// itself declares, and bash2 declares none of shavit-hud's.
+bool DevHudSideAvailable()
+{
+	return LibraryExists("shavit-hud");
+}
+
+bool BuildDevHudText(int target, char[] buffer, int maxlen)
+{
+	if(target < 1 || target > MaxClients || !IsClientInGame(target))
+	{
+		return false;
+	}
+
+	if(g_iDevHud_StartSamples[target] < 2 && g_iDevHud_EndSamples[target] < 2)
+	{
+		return false;
+	}
+
+	FormatEx(buffer, maxlen, "start  avg %.2f  dev %.2f\nend    avg %.2f  dev %.2f",
+		g_fDevHud_StartAvg[target], g_fDevHud_StartDev[target],
+		g_fDevHud_EndAvg[target], g_fDevHud_EndDev[target]);
+
+	return true;
+}
+
+// Appends to shavit-hud's bottom-left key hint without shavit-hud knowing we
+// exist. The buffer comes in with copyback, shavit resolves the spectator
+// target for us, and returning Plugin_Changed makes it send what we wrote.
+public Action Shavit_OnKeyHintHUD(int client, int target, char[] keyhint, int keyhintlength, int track, int style)
+{
+	if(client < 1 || client > MaxClients || g_iDevHud[client] != DEVHUD_SIDE)
+	{
+		return Plugin_Continue;
+	}
+
+	char sDev[128];
+
+	if(!BuildDevHudText(target, sDev, sizeof(sDev)))
+	{
+		return Plugin_Continue;
+	}
+
+	// Format tolerates its own output buffer as an input; FormatEx does not.
+	if(keyhint[0] != '\0')
+	{
+		Format(keyhint, keyhintlength, "%s\n%s", keyhint, sDev);
+	}
+	else
+	{
+		strcopy(keyhint, keyhintlength, sDev);
+	}
+
+	return Plugin_Changed;
+}
+
+public Action Timer_DevHud(Handle timer, any data)
+{
+	for(int client = 1; client <= MaxClients; client++)
+	{
+		if(g_iDevHud[client] != DEVHUD_OVERLAY || !IsClientInGame(client) || IsFakeClient(client))
+		{
+			continue;
+		}
+
+		// The editor draws its own preview each tick.
+		if(g_bDevHudEditing[client])
+		{
+			continue;
+		}
+
+		// Spectators see the HUD of whoever they are watching, which is the
+		// same thing bash2_stats already lets them look at.
+		int target = client;
+
+		if(!IsPlayerAlive(client))
+		{
+			target = GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
+
+			if(target < 1 || target > MaxClients || !IsClientInGame(target))
+			{
+				continue;
+			}
+		}
+
+		char sDev[128];
+
+		if(!BuildDevHudText(target, sDev, sizeof(sDev)))
+		{
+			continue;
+		}
+
+		SetHudTextParams(g_fDevHudX[client], g_fDevHudY[client], DEVHUD_HOLD, 255, 255, 255, 255, 0, 0.0, 0.0, 0.0);
+		ShowSyncHudText(client, g_hDevHudSync, "%s", sDev);
+	}
+
+	return Plugin_Continue;
 }
 
 void ShowBashStats(int client, int userid)
@@ -1794,6 +2515,23 @@ MoveType g_mLastMoveType[MAXPLAYERS + 1];
 
 public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
 {
+	// Editing the HUD freezes the player with FL_ATCONTROLS, so their input is
+	// not real movement. Bail out before any of the detection work below so
+	// nothing bogus reaches the strafe buffers.
+	if(g_bDevHudEditing[client])
+	{
+		if(!IsClientInGame(client) || !IsPlayerAlive(client))
+		{
+			StopDevHudEditor(client);
+		}
+		else
+		{
+			UpdateDevHudEditor(client, buttons, mouse);
+
+			return Plugin_Continue;
+		}
+	}
+
 	if(!IsFakeClient(client) && IsPlayerAlive(client))
 	{
 		// Update all information this tick
@@ -2327,6 +3065,7 @@ stock void RecordStartStrafe(int client, int button, int turnDir, const char[] c
 	g_iStartStrafe_Stats[client][StrafeData_TurnDirection][currFrame] = turnDir;
 	g_iStartStrafe_Stats[client][StrafeData_MoveDirection][currFrame] = moveDir;
 	g_iStartStrafe_Stats[client][StrafeData_Difference][currFrame]    = g_iLastPressTick[client][button][BT_Move] - g_iLastTurnTick[client];
+	AddRunOffset(client, true, g_iStartStrafe_Stats[client][StrafeData_Difference][currFrame]);
 	g_iStartStrafe_Stats[client][StrafeData_Tick][currFrame]          = g_iCmdNum[client];
 	g_iStartStrafe_Stats[client][StrafeData_IsTiming][currFrame]      = g_bIsBeingTimed[client];
 	g_bStartStrafe_IsRecorded[client][currFrame] = true;
@@ -2377,6 +3116,8 @@ stock void RecordStartStrafe(int client, int button, int turnDir, const char[] c
 			AutoBanPlayer(client);
 		}
 	}
+
+	UpdateDevHud(client, true);
 }
 
 stock void RecordEndStrafe(int client, int button, int turnDir, const char[] caller)
@@ -2400,6 +3141,7 @@ stock void RecordEndStrafe(int client, int button, int turnDir, const char[] cal
 		g_iLastTurnTick_Recorded_EndStrafe[client] = g_iLastTurnTick[client];
 	}
 	g_iEndStrafe_Stats[client][StrafeData_Difference][currFrame] = difference;
+	AddRunOffset(client, false, difference);
 	g_bEndStrafe_IsRecorded[client][currFrame]                   = true;
 	g_iEndStrafe_Stats[client][StrafeData_Tick][currFrame]       = g_iCmdNum[client];
 	g_iEndStrafe_CurrentFrame[client] = (g_iEndStrafe_CurrentFrame[client] + 1) % MAX_FRAMES;
@@ -2449,6 +3191,8 @@ stock void RecordEndStrafe(int client, int button, int turnDir, const char[] cal
 			AutoBanPlayer(client);
 		}
 	}
+
+	UpdateDevHud(client, false);
 
 	g_iKeyPressesThisStrafe[client][BT_Move] = 0;
 	g_iKeyPressesThisStrafe[client][BT_Key]  = 0;
