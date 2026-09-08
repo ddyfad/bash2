@@ -19,7 +19,7 @@ Changes in this fork:
 * Don't count gain on ticks with no wish input, and fix a stationary check that only matched exactly 0.0 and so scored standing still as a perfect strafe
 * Only accumulate gain on ticks that actually gained
 * `bash_dev_ignore_styles` - style ids exempt from the dev and identical-strafe detections. Unlike `bash_bypass` this keeps gain logging on, so an autostrafe style can still be watched
-* `bash_report_ignore_styles` - style ids whose detections are not passed to the `Bash_OnDetection` forward. Chat, mainly used to stop autosync logs being sent to sourcejump.
+* `bash_report_ignore_styles` - style ids whose detections are not passed to the `Bash_OnDetection` forward, mainly used to stop autosync logs being sent to sourcejump.
 ## Commands
 
 ```
