@@ -3691,18 +3691,20 @@ void UpdateGains(int client, float vel[3], float angles[3], int buttons)
 
 				currentgain = GetVectorDotProduct(velocity, wishdir);
 				if(currentgain < 30.0)
+				{
 					gaincoeff = (wishspd - FloatAbs(currentgain)) / wishspd;
-				if(g_bTouchesWall[client] && gaincoeff > 0.5)
-				{
-					gaincoeff -= 1;
-					gaincoeff = FloatAbs(gaincoeff);
-				}
 
-				if(!g_bTouchesFuncRotating[client])
-				{
-					g_flRawGain[client] += gaincoeff;
-				}
+					if(g_bTouchesWall[client] && gaincoeff > 0.5)
+					{
+						gaincoeff -= 1;
+						gaincoeff = FloatAbs(gaincoeff);
+					}
 
+					if(!g_bTouchesFuncRotating[client])
+					{
+						g_flRawGain[client] += gaincoeff;
+					}
+				}
 			}
 		}
 		g_iTicksOnGround[client] = 0;
