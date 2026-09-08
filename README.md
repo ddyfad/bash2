@@ -5,6 +5,15 @@ My version of bash is more geared toward collecting extra information and making
 
 ## If you're already using Bash2 on your server, you will need to delete your current cfg(or rename it to something like bash.cfg.bak) and let it regenerate. This version is much more configurable.
 
+## Compiling
+
+The json include is [clugg/sm-json](https://github.com/clugg/sm-json), needed to compile but not to run.
+
+If you compile it yourself and the discord embeds stop sending, that's sm-json sizing nested objects. `json_encode_size` in `json.inc` uses a fixed worst case for a child object instead of measuring it, and an embed nests several, so it overruns the heap and the message is dropped with no obvious error. Two fixes, either works:
+
+* in `json.inc`, `cell_length = child != null ? max_size : JSON_NULL_BUFFER_SIZE;` becomes `cell_length = child != null ? json_encode_size(child, options) : JSON_NULL_BUFFER_SIZE;`
+* or `#pragma dynamic 1234567` at the top of `shavit-bash2.sp`, which leaves the include alone
+
 Main Changes:
 * Remove useless code that was intended for the older movement community (nulls detections, faking if a player is on the ground to brick optis, etc)
 * Add configurations for dev and identical strafes bans
@@ -34,7 +43,7 @@ bash2_test  - trigger a test message so you can know if webhooks are working
 ## Depencenies for the Discord Messages
 
 * [SteamWorks](https://forums.alliedmods.net/showthread.php?t=229556)
-* [sm-json](https://github.com/doug919/smjson) (only for compiling)
+* [sm-json](https://github.com/clugg/sm-json) (only for compiling)
 
 ## Anticheat bypass
 
