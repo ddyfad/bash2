@@ -224,6 +224,7 @@ ConVar g_hAutobanSafeGroup;
 ConVar g_hDevBan;
 ConVar g_hGainLogSpjBan;
 ConVar g_hIdentificalStrafeBan;
+ConVar g_hDevIgnoreStyles;
 ConVar g_hBashCmdPublic;
 Cookie g_hEnabledCookie;
 Cookie g_hPersonalCookie;
@@ -328,6 +329,7 @@ public void OnPluginStart()
 	g_hBanIP = CreateConVar("bash_ban_ip", "0", "ban players IP address instead of SteamID", _, true, 0.0, true, 1.0);
 	g_hDevBan = CreateConVar("bash_ban_dev", "0.4", "Offset threshold at which to ban a player", _, true, 0.0, true, 0.8);
 	g_hIdentificalStrafeBan = CreateConVar("bash_ban_identical", "20", "Threshold to ban player for identical sync offsets", _, true, 15.0, true, 50.0);
+	g_hDevIgnoreStyles = CreateConVar("bash_dev_ignore_styles", "", "Shavit style ids exempt from the deviation and identical-strafe detections, comma separated. Suppresses the alert, the log and the autoban. Gain logs are unaffected. Empty checks every style.");
 	g_hGainLogSpjBan = CreateConVar("bash_ban_spj", "4.7", "Gain log spj threshhold for autobans", _, true, 3.5, false);
 
 	g_hDevBanSafeGroup = CreateConVar("bash_ban_dev_safegroup", "0.35", "Offset threshold at which to ban a player who is in a safe group", _, true, 0.0, true, 0.8);
@@ -3419,10 +3421,53 @@ void ProcessAngleSnap(int client, float illegalPct, float timingPct)
 	g_csChatStrings.sWarning, client, illegalPct * 100.0, timingPct * 100.0, sStyle, g_Sensitivity[client], g_mYaw[client]);
 }
 
+// Autostrafers trip both detections by construction. Gain logs stay on.
+bool IsStyleDevIgnored(int style)
+{
+	return IsStyleInList(g_hDevIgnoreStyles, style);
+}
+
+bool IsStyleInList(ConVar cvar, int style)
+{
+	if(cvar == null)
+	{
+		return false;
+	}
+
+	char sBlacklist[128];
+	cvar.GetString(sBlacklist, sizeof(sBlacklist));
+
+	if(sBlacklist[0] == '\0')
+	{
+		return false;
+	}
+
+	char sParts[32][8];
+	int iCount = ExplodeString(sBlacklist, ",", sParts, sizeof(sParts), sizeof(sParts[]));
+
+	for(int i = 0; i < iCount; i++)
+	{
+		TrimString(sParts[i]);
+
+		if(sParts[i][0] != '\0' && StringToInt(sParts[i]) == style)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void ProcessLowDev(int client, float dev, float mean, bool start)
 {
 	char sStyle[32];
 	int style = Shavit_GetBhopStyle(client);
+
+	if(IsStyleDevIgnored(style))
+	{
+		return;
+	}
+
 	Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
 	FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName);
 
@@ -3475,6 +3520,12 @@ void ProcessTooManyIdenticals(int client, int offset, int identicals, bool start
 
 	char sStyle[32];
 	int style = Shavit_GetBhopStyle(client);
+
+	if(IsStyleDevIgnored(style))
+	{
+		return;
+	}
+
 	Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
 	FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName);
 
