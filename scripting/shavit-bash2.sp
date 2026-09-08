@@ -802,27 +802,7 @@ public void OnClientConnected(int client)
 
 	GetClientIP(client, g_sPlayerIp[client], 16);
 
-	for(int idx; idx < MAX_FRAMES; idx++)
-	{
-		g_bStartStrafe_IsRecorded[client][idx]         = false;
-		g_bEndStrafe_IsRecorded[client][idx]           = false;
-	}
-
-	for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
-	{
-		g_bKeySwitch_IsRecorded[client][BT_Key][idx]   = false;
-		g_bKeySwitch_IsRecorded[client][BT_Move][idx]  = false;
-	}
-
-	g_iStartStrafe_CurrentFrame[client]        = 0;
-	g_iEndStrafe_CurrentFrame[client]          = 0;
-	g_iKeySwitch_CurrentFrame[client][BT_Key]  = 0;
-	g_iKeySwitch_CurrentFrame[client][BT_Move] = 0;
-	g_bCheckedYet[client] = false;
-	g_iStartStrafe_LastTickDifference[client] = 0;
-	g_iEndStrafe_LastTickDifference[client] = 0;
-	g_iStartStrafe_IdenticalCount[client] = 0;
-	g_iEndStrafe_IdenticalCount[client]   = 0;
+	ResetStrafeTracking(client);
 
 	g_iYawSpeed[client] = 210.0;
 	g_mYaw[client] = 0.0;
@@ -1747,6 +1727,44 @@ char[] DevHudModeName(int mode)
 	}
 
 	return out;
+}
+
+// ResetDevHud only clears the averages, not these.
+void ResetStrafeTracking(int client)
+{
+	for(int idx; idx < MAX_FRAMES; idx++)
+	{
+		g_bStartStrafe_IsRecorded[client][idx]         = false;
+		g_bEndStrafe_IsRecorded[client][idx]           = false;
+	}
+
+	for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
+	{
+		g_bKeySwitch_IsRecorded[client][BT_Key][idx]   = false;
+		g_bKeySwitch_IsRecorded[client][BT_Move][idx]  = false;
+	}
+
+	g_iStartStrafe_CurrentFrame[client]        = 0;
+	g_iEndStrafe_CurrentFrame[client]          = 0;
+	g_iKeySwitch_CurrentFrame[client][BT_Key]  = 0;
+	g_iKeySwitch_CurrentFrame[client][BT_Move] = 0;
+	g_bCheckedYet[client] = false;
+	g_iStartStrafe_LastTickDifference[client] = 0;
+	g_iEndStrafe_LastTickDifference[client] = 0;
+	g_iStartStrafe_IdenticalCount[client] = 0;
+	g_iEndStrafe_IdenticalCount[client]   = 0;
+}
+
+// Autosync produces thousands of identical -1s, do not carry them into the next style.
+public void Shavit_OnStyleChanged(int client, int oldstyle, int newstyle, int track, bool manual)
+{
+	if(client < 1 || client > MaxClients)
+	{
+		return;
+	}
+
+	ResetStrafeTracking(client);
+	ResetDevHud(client);
 }
 
 void ResetDevHud(int client)
