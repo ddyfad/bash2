@@ -3664,7 +3664,8 @@ void UpdateGains(int client, float vel[3], float angles[3], int buttons)
 			float velocity[3];
 			GetEntPropVector(client, Prop_Data, "m_vecAbsVelocity", velocity);
 
-			if(!FloatAbs(velocity[0]) && !FloatAbs(velocity[1]))
+			// Barely moving. !FloatAbs() only matched exactly 0.0.
+			if(FloatAbs(velocity[0]) < 1.0 && FloatAbs(velocity[1]) < 1.0)
 			{
 				return;
 			}
