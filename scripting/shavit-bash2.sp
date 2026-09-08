@@ -1880,20 +1880,20 @@ void PrintRunOffsetStats(int client)
 	if(startSamples > 0 && endSamples > 0)
 	{
 		Shavit_PrintToChat(client,
-			"Run offsets | Start: Avg %.2f SD %.2f | End: Avg %.2f SD %.2f",
+			"Run offsets | Start: Avg %.2f Dev %.2f | End: Avg %.2f Dev %.2f",
 			g_fRunStartMean[client], GetRunOffsetSD(client, true),
 			g_fRunEndMean[client], GetRunOffsetSD(client, false));
 	}
 	else if(startSamples > 0)
 	{
 		Shavit_PrintToChat(client,
-			"Run offsets | Start: Avg %.2f SD %.2f | End: N/A",
+			"Run offsets | Start: Avg %.2f Dev %.2f | End: N/A",
 			g_fRunStartMean[client], GetRunOffsetSD(client, true));
 	}
 	else
 	{
 		Shavit_PrintToChat(client,
-			"Run offsets | Start: N/A | End: Avg %.2f SD %.2f",
+			"Run offsets | Start: N/A | End: Avg %.2f Dev %.2f",
 			g_fRunEndMean[client], GetRunOffsetSD(client, false));
 	}
 }
