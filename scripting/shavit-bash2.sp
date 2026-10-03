@@ -3434,7 +3434,7 @@ void ProcessGainLog(int client, float gain, float spj, float yawwing)
 	if(ban)
 	{
 		AutoBanPlayer(client);
-		AnticheatLog(client, true, "Banned for suspicious gains");
+		if (g_hAutoban.BoolValue) AnticheatLog(client, true, "Banned for suspicious gains");
 	}
 }
 
@@ -3542,7 +3542,7 @@ void ProcessLowDev(int client, float dev, float mean, bool start)
 		return;
 	}
 
-	AnticheatLog(client, true, "BAN Dev: %.2f Average: %.2f Style %s", dev, mean, sStyle);
+	if (g_hAutoban.BoolValue) AnticheatLog(client, true, "BAN Dev: %.2f Average: %.2f Style %s", dev, mean, sStyle);
 	AutoBanPlayer(client);
 }
 
@@ -3590,7 +3590,7 @@ void ProcessTooManyIdenticals(int client, int offset, int identicals, bool start
 		return;
 	}
 
-	AnticheatLog(client, true, "BAN %i Identical %i %s Strafes Style: %s", identicals, offset, (start ? "Start":"End"), sStyle);
+	if (g_hAutoban.BoolValue) AnticheatLog(client, true, "BAN %i Identical %i %s Strafes Style: %s", identicals, offset, (start ? "Start":"End"), sStyle);
 
 	g_bAwaitingBan[client] = true;
 }
