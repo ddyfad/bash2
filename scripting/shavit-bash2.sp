@@ -330,7 +330,7 @@ public void OnPluginStart()
 	g_hBanIP = CreateConVar("bash_ban_ip", "0", "ban players IP address instead of SteamID", _, true, 0.0, true, 1.0);
 	g_hDevBan = CreateConVar("bash_ban_dev", "0.4", "Offset threshold at which to ban a player", _, true, 0.0, true, 0.8);
 	g_hIdentificalStrafeBan = CreateConVar("bash_ban_identical", "20", "Threshold to ban player for identical sync offsets", _, true, 15.0, true, 50.0);
-	g_hDevIgnoreStyles = CreateConVar("bash_dev_ignore_styles", "", "Shavit style ids exempt from the deviation and identical-strafe detections, comma separated. Suppresses the alert, the log and the autoban. Gain logs are unaffected. Empty checks every style.");
+	g_hDevIgnoreStyles = CreateConVar("bash_dev_ignore_styles", "", "Shavit style ids that only get gain tracking, comma separated. No strafe or key switch stats are recorded, so the deviation and identical-strafe detections never run. Empty checks every style.");
 	g_hReportIgnoreStyles = CreateConVar("bash_report_ignore_styles", "", "Shavit style ids whose detections are not passed to the Bash_OnDetection forward, comma separated. Chat, logs, webhook and bans are unaffected. Empty reports every style.");
 	g_hGainLogSpjBan = CreateConVar("bash_ban_spj", "4.7", "Gain log spj threshhold for autobans", _, true, 3.5, false);
 
@@ -3091,6 +3091,11 @@ stock void RecordStartStrafe(int client, int button, int turnDir, const char[] c
 	g_iLastPressTick_Recorded[client][button][BT_Move] = g_iLastPressTick[client][button][BT_Move];
 	g_iLastTurnTick_Recorded_StartStrafe[client]       = g_iLastTurnTick[client];
 
+	if(IsStyleDevIgnored(Shavit_GetBhopStyle(client)))
+	{
+		return;
+	}
+
 	int moveDir   = GetDirection(client);
 	int currFrame = g_iStartStrafe_CurrentFrame[client];
 	g_iStartStrafe_LastRecordedTick[client] = g_iCmdNum[client];
@@ -3157,6 +3162,15 @@ stock void RecordEndStrafe(int client, int button, int turnDir, const char[] cal
 {
 	g_iReleaseTickAtLastEndStrafe[client][button] = g_iLastReleaseTick[client][button][BT_Move];
 	g_iLastReleaseTick_Recorded[client][button][BT_Move] = g_iLastReleaseTick[client][button][BT_Move];
+
+	if(IsStyleDevIgnored(Shavit_GetBhopStyle(client)))
+	{
+		g_iLastTurnTick_Recorded_EndStrafe[client] = g_iLastTurnTick[client] > g_iLastStopTurnTick[client] ? g_iLastTurnTick[client] : g_iLastStopTurnTick[client];
+		g_iKeyPressesThisStrafe[client][BT_Move] = 0;
+		g_iKeyPressesThisStrafe[client][BT_Key]  = 0;
+		return;
+	}
+
 	g_iEndStrafe_LastRecordedTick[client] = g_iCmdNum[client];
 	int moveDir = GetDirection(client);
 	int currFrame = g_iEndStrafe_CurrentFrame[client];
@@ -3233,7 +3247,14 @@ stock void RecordEndStrafe(int client, int button, int turnDir, const char[] cal
 
 stock void RecordKeySwitch(int client, int button, int oppositeButton, int btype, const char[] caller)
 {
-	// Record the data
+	g_iLastPressTick_Recorded_KS[client][button][btype]           = g_iLastPressTick[client][button][btype];
+	g_iLastReleaseTick_Recorded_KS[client][oppositeButton][btype] = g_iLastReleaseTick[client][oppositeButton][btype];
+
+	if(IsStyleDevIgnored(Shavit_GetBhopStyle(client)))
+	{
+		return;
+	}
+
 	int currFrame = g_iKeySwitch_CurrentFrame[client][btype];
 	g_iKeySwitch_Stats[client][KeySwitchData_Button][btype][currFrame]      = button;
 	g_iKeySwitch_Stats[client][KeySwitchData_Difference][btype][currFrame]  = g_iLastPressTick[client][button][btype] - g_iLastReleaseTick[client][oppositeButton][btype];
@@ -3241,8 +3262,6 @@ stock void RecordKeySwitch(int client, int button, int oppositeButton, int btype
 	g_bKeySwitch_IsRecorded[client][btype][currFrame]                       = true;
 	g_iKeySwitch_LastRecordedTick[client][btype]                            = g_iCmdNum[client];
 	g_iKeySwitch_CurrentFrame[client][btype]                                = (g_iKeySwitch_CurrentFrame[client][btype] + 1) % MAX_FRAMES_KEYSWITCH;
-	g_iLastPressTick_Recorded_KS[client][button][btype]                     = g_iLastPressTick[client][button][btype];
-	g_iLastReleaseTick_Recorded_KS[client][oppositeButton][btype]           = g_iLastReleaseTick[client][oppositeButton][btype];
 }
 
 // If a player triggers this while they are turning and their turning rate is legal from the CheckForIllegalTurning function, then we can probably autoban
@@ -3452,7 +3471,7 @@ void ProcessAngleSnap(int client, float illegalPct, float timingPct)
 	g_csChatStrings.sWarning, client, illegalPct * 100.0, timingPct * 100.0, sStyle, g_Sensitivity[client], g_mYaw[client]);
 }
 
-// Autostrafers trip both detections by construction. Gain logs stay on.
+// Autostrafers wreck strafe stats by construction, so those styles only get gain tracking.
 bool IsStyleDevIgnored(int style)
 {
 	return IsStyleInList(g_hDevIgnoreStyles, style);
@@ -3493,11 +3512,6 @@ void ProcessLowDev(int client, float dev, float mean, bool start)
 {
 	char sStyle[32];
 	int style = Shavit_GetBhopStyle(client);
-
-	if(IsStyleDevIgnored(style))
-	{
-		return;
-	}
 
 	Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
 	FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName);
@@ -3551,11 +3565,6 @@ void ProcessTooManyIdenticals(int client, int offset, int identicals, bool start
 
 	char sStyle[32];
 	int style = Shavit_GetBhopStyle(client);
-
-	if(IsStyleDevIgnored(style))
-	{
-		return;
-	}
 
 	Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
 	FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName);
